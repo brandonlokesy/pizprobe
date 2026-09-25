@@ -11,6 +11,7 @@ authors = [{ name = "Brandon Loke" }]
 dependencies = [
     "numpy",
     "igor2",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]

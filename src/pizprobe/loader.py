@@ -1,4 +1,4 @@
-# pizprobe/io.py
+# pizprobe/loader.py
 """
 Loaders for AFM scan files.
 
