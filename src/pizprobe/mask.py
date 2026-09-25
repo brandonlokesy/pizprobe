@@ -10,6 +10,10 @@ rectangle
     Mask of the pixels inside an axis-aligned rectangle.
 polygon
     Mask of the pixels inside a polygon.
+grow, shrink
+    Move the edge of a mask outwards or inwards by a number of pixels.
+remove_small
+    Drop isolated patches smaller than a number of pixels.
 
 Conventions
 -----------
@@ -45,6 +49,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.path import Path
+from scipy import ndimage
 
 # Pixel-coordinate tolerance, so a boundary given in metres that lands exactly on a pixel
 # centre (up to rounding in x / dx) includes that pixel.
@@ -175,6 +180,109 @@ def polygon(shape, vertices, pixel_size=None) -> np.ndarray:
     rows, cols = np.mgrid[0:shape[0], 0:shape[1]]
     centres = np.column_stack([cols.ravel(), rows.ravel()])
     return path.contains_points(centres).reshape(shape)
+
+
+def grow(mask: np.ndarray, pixels: int) -> np.ndarray:
+    """
+    Move the edge of a mask outwards by ``pixels``.
+
+    Every pixel within a distance of ``pixels`` (a disc, measured between pixel centres)
+    of a True pixel becomes True. Use it to keep the foot of a step or the rim of a
+    particle out of a fit. The Asylum software calls this "Dilate Mask".
+
+    Parameters
+    ----------
+    mask : np.ndarray of bool
+        2-D mask.
+    pixels : int
+        Distance in pixels, >= 0. 0 returns a copy.
+
+    Returns
+    -------
+    np.ndarray of bool
+
+    Examples
+    --------
+    >>> features = grow(threshold(z, above=15e-9), 3)
+    """
+    mask, pixels = _check_morphology(mask, pixels)
+    if pixels == 0:
+        return mask.copy()
+    return ndimage.binary_dilation(mask, structure=_disc(pixels))
+
+
+def shrink(mask: np.ndarray, pixels: int) -> np.ndarray:
+    """
+    Move the edge of a mask inwards by ``pixels``.
+
+    A pixel stays True only if every pixel within a distance of ``pixels`` is True, so
+    patches narrower than about ``2 * pixels + 1`` disappear. The image border does not
+    count as an edge: a patch touching the border shrinks only from its edges inside the
+    image. The Asylum software calls this "Erode Mask". ``grow`` then ``shrink`` by the
+    same amount is not always the identity (it fills narrow gaps).
+
+    Parameters
+    ----------
+    mask : np.ndarray of bool
+        2-D mask.
+    pixels : int
+        Distance in pixels, >= 0. 0 returns a copy.
+
+    Returns
+    -------
+    np.ndarray of bool
+    """
+    mask, pixels = _check_morphology(mask, pixels)
+    if pixels == 0:
+        return mask.copy()
+    return ndimage.binary_erosion(mask, structure=_disc(pixels), border_value=1)
+
+
+def remove_small(mask: np.ndarray, min_pixels: int) -> np.ndarray:
+    """
+    Drop isolated patches of True smaller than ``min_pixels``.
+
+    Patches are groups of True pixels touching by an edge or a corner. Use it to clean
+    single noisy pixels out of a threshold mask. To fill small holes instead, apply it
+    to the inverted mask: ``~remove_small(~mask, n)``.
+
+    Parameters
+    ----------
+    mask : np.ndarray of bool
+        2-D mask.
+    min_pixels : int
+        Patches with fewer pixels than this are set to False. >= 1.
+
+    Returns
+    -------
+    np.ndarray of bool
+
+    Examples
+    --------
+    >>> features = remove_small(threshold(z, above=15e-9), 5)    # drop noise specks
+    >>> features = ~remove_small(~features, 20)                  # fill small holes
+    """
+    mask, min_pixels = _check_morphology(mask, min_pixels, name="min_pixels", minimum=1)
+    labels, _ = ndimage.label(mask, structure=np.ones((3, 3), dtype=bool))
+    sizes = np.bincount(labels.ravel())
+    keep = sizes >= min_pixels
+    keep[0] = False  # label 0 is the background
+    return keep[labels]
+
+
+def _disc(radius: int) -> np.ndarray:
+    """Boolean disc of ``radius`` pixels, centre included."""
+    r = np.arange(-radius, radius + 1)
+    return r[:, None] ** 2 + r[None, :] ** 2 <= radius**2
+
+
+def _check_morphology(mask, n, name="pixels", minimum=0):
+    mask = np.asarray(mask, dtype=bool)
+    if mask.ndim != 2:
+        raise ValueError(f"mask must be 2-D, got shape {mask.shape}.")
+    if int(n) != n or n < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}, got {n!r}.")
+    return mask, int(n)
 
 
 def _check_shape(shape) -> tuple:

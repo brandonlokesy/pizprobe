@@ -12,6 +12,7 @@ dependencies = [
     "numpy",
     "igor2",
     "matplotlib",
+    "scipy",
 ]
 
 [project.optional-dependencies]
