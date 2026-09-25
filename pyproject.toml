@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pizprobe"
+version = "0.1.0"
+description = "PizProbe — AFM scan loading and analysis (Asylum Research .ibw)"
+requires-python = ">=3.9"
+authors = [{ name = "Brandon Loke" }]
+dependencies = [
+    "numpy",
+    "igor2",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
