@@ -1,9 +1,9 @@
-"""Region masks: pixel and metre coordinates."""
+"""Threshold masks, and region masks in pixel and metre coordinates."""
 
 import numpy as np
 import pytest
 
-from pizprobe.mask import polygon, rectangle
+from pizprobe.mask import polygon, rectangle, threshold
 
 # Non-square image and non-square pixels, so a swapped axis would fail.
 SHAPE = (6, 8)
@@ -14,6 +14,22 @@ def box(rows, cols):
     out = np.zeros(SHAPE, dtype=bool)
     out[rows, cols] = True
     return out
+
+
+Z = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, np.nan]])
+
+
+def test_threshold_above_below_and_band():
+    np.testing.assert_array_equal(threshold(Z, above=2.0), [[0, 0, 0], [1, 1, 0]])
+    np.testing.assert_array_equal(threshold(Z, below=2.0), [[1, 1, 0], [0, 0, 0]])
+    np.testing.assert_array_equal(threshold(Z, above=0.5, below=3.5), [[0, 1, 1], [1, 0, 0]])
+
+
+def test_threshold_bad_limits_raise():
+    with pytest.raises(ValueError, match="at least one"):
+        threshold(Z)
+    with pytest.raises(ValueError, match="empty"):
+        threshold(Z, above=3.0, below=1.0)
 
 
 def test_rectangle_in_pixels():

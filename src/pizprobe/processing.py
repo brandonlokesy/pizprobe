@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .mask import _check_mask
+
 
 def plane_fit(z: np.ndarray, mask: np.ndarray | None = None, order: int = 1) -> np.ndarray:
     """
@@ -62,10 +64,8 @@ def plane_fit(z: np.ndarray, mask: np.ndarray | None = None, order: int = 1) -> 
     order = int(order)
 
     use = np.isfinite(z)
+    mask = _check_mask(mask, z.shape)
     if mask is not None:
-        mask = np.asarray(mask, dtype=bool)
-        if mask.shape != z.shape:
-            raise ValueError(f"mask shape {mask.shape} does not match z shape {z.shape}.")
         use &= ~mask
 
     terms = [(p, q) for p in range(order + 1) for q in range(order + 1 - p)]

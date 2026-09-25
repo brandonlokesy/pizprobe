@@ -6,7 +6,7 @@ from igor2 import binarywave
 
 from _paths import DATA
 from pizprobe import AsylumScan
-from pizprobe.loader import _undo_saved_flatten
+from pizprobe.loaders import _undo_saved_flatten
 
 FILE = DATA / "dose_280_wg0002.ibw"
 CHANNELS = ["HeightRetrace", "AmplitudeRetrace", "PhaseRetrace", "ZSensorRetrace"]
