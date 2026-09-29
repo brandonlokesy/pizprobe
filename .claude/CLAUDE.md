@@ -65,3 +65,6 @@ line only has to state plainly what is being asked of the user, or that nothing 
 
 This governs the reply text only. It does not change how code, docstrings, comments, or
 documents are written — those follow the rules above.
+
+**Use unicode mathematics**. Choose unicode-rendered mathematics over tex-based mathematics for
+replies in the terminal. This aids human-readability.

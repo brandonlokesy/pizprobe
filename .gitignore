@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+bash.exe.stackdump
+reference_guides/

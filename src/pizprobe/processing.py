@@ -23,7 +23,7 @@ import warnings
 
 import numpy as np
 
-from .mask import _check_mask
+from ._common import _as_image, _check_mask
 
 
 def plane_fit(z: np.ndarray, mask: np.ndarray | None = None, order: int = 1) -> np.ndarray:
@@ -60,9 +60,7 @@ def plane_fit(z: np.ndarray, mask: np.ndarray | None = None, order: int = 1) -> 
     >>> levelled = plane_fit(z)                     # rough level, no mask
     >>> levelled = plane_fit(z, mask=features)      # fit the floor only
     """
-    z = np.asarray(z, dtype=float)
-    if z.ndim != 2:
-        raise ValueError(f"z must be a 2-D image, got shape {z.shape}.")
+    z = _as_image(z)
     if int(order) != order or order < 0:
         raise ValueError(f"order must be an integer >= 0, got {order!r}.")
     order = int(order)
@@ -145,9 +143,7 @@ def line_flatten(
     >>> flat = line_flatten(levelled, mask=features, statistic="median")
     >>> flat = line_flatten(levelled, mask=features, order=1)   # offsets and slopes
     """
-    z = np.asarray(z, dtype=float)
-    if z.ndim != 2:
-        raise ValueError(f"z must be a 2-D image, got shape {z.shape}.")
+    z = _as_image(z)
     if order not in (0, 1):
         raise ValueError(f"order must be 0 or 1, got {order!r}.")
     if statistic not in ("mean", "median"):

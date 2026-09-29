@@ -3,7 +3,7 @@
 "Piz" is Romansh for peak.
 """
 
-from . import mask, plotting
+from . import analysis, mask, plotting
 from .loaders import AsylumScan, Channel
 from .processing import line_flatten, plane_fit
 

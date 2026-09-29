@@ -51,6 +51,8 @@ import numpy as np
 from matplotlib.path import Path
 from scipy import ndimage
 
+from ._common import _check_shape, _to_pixels
+
 # Pixel-coordinate tolerance, so a boundary given in metres that lands exactly on a pixel
 # centre (up to rounding in x / dx) includes that pixel.
 _EDGE = 1e-9
@@ -283,37 +285,3 @@ def _check_morphology(mask, n, name="pixels", minimum=0):
     if int(n) != n or n < minimum:
         raise ValueError(f"{name} must be an integer >= {minimum}, got {n!r}.")
     return mask, int(n)
-
-
-def _check_shape(shape) -> tuple:
-    shape = tuple(int(n) for n in shape)
-    if len(shape) != 2 or min(shape) < 1:
-        raise ValueError(f"shape must be (n_rows, n_cols) of a 2-D image, got {shape}.")
-    return shape
-
-
-def _check_mask(mask, shape):
-    """``mask`` as a bool array of ``shape``, or None. Shared by every function taking a mask."""
-    if mask is None:
-        return None
-    mask = np.asarray(mask, dtype=bool)
-    if mask.shape != tuple(shape):
-        raise ValueError(f"mask shape {mask.shape} does not match z shape {tuple(shape)}.")
-    return mask
-
-
-def _check_pixel_size(pixel_size) -> tuple:
-    """``pixel_size`` as ``(dx, dy)`` floats, both > 0. Shared with ``pizprobe.plotting``."""
-    dx, dy = (float(s) for s in pixel_size)
-    if not (dx > 0 and dy > 0):
-        raise ValueError(f"pixel_size must be two positive lengths in m, got {pixel_size}.")
-    return dx, dy
-
-
-def _to_pixels(points, shape, pixel_size) -> np.ndarray:
-    """``(horizontal, vertical)`` points -> ``(col, row)`` pixel coordinates, as floats."""
-    points = np.asarray(points, dtype=float)
-    if pixel_size is None:
-        return points
-    dx, dy = _check_pixel_size(pixel_size)
-    return np.column_stack([points[:, 0] / dx, (shape[0] - 1) - points[:, 1] / dy])
