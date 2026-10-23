@@ -15,8 +15,6 @@ At present, I am slowly building out the library with the features required.
 
 ## Design rules
 
-The argument for each, with worked examples, is in `dev/design-principles.md`.
-
 **Corrections are opt-in.** The researcher decides whether a further correction is
 warranted; the package never decides for them.
 
