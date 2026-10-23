@@ -9,14 +9,22 @@ Channel
 AsylumScan
     An Asylum Research ``.ibw`` scan: every channel, the parsed wave note, and a
     readable summary. Undoes the line flatten Asylum applies by default when saving.
+BrukerScan
+    A Bruker NanoScope ``.spm`` scan: every channel, the parsed header, and a readable
+    summary. Data are loaded as saved.
 
 Conventions
 -----------
-- Data are in SI units as stored in the file (lengths in m, phase in degrees).
+- Data are in SI units (lengths in m, forces in N, phase in degrees).
 - Images use the orientation of the Asylum display and of AFMReader's ``load_ibw``:
   ``np.flipud(wData.T)``, so rows are scan lines, the first one at the bottom when shown
   with ``imshow(origin="upper")``. Files saved with ``ScanDown: 1`` were checked only
   against AFMReader, not against the Asylum display.
+- NanoScope images are ``np.flipud`` of the stored line order, as in Gwyddion's reader,
+  whatever the ``Frame direction``. Not yet checked against the NanoScope display.
+- Pixel size follows each manufacturer: Asylum stores ``ScanSize / (points - 1)`` (a
+  pixel is a sample point, the first at 0 and the last at ScanSize); Bruker uses
+  ``ScanSize / points`` (a pixel is a cell of that width).
 """
 
 from __future__ import annotations
@@ -39,6 +47,18 @@ _UNITS = {
 }
 
 _INT = re.compile(r"[+-]?\d+")
+
+# NanoScope header: ``\key: value``. The key may itself hold a colon (``@2:Z scale``),
+# so the key ends at the first colon followed by whitespace or the end of the line.
+_BRUKER_LINE = re.compile(r"(.+?):(?:\s+|$)(.*)")
+# ``@2:Z scale`` value, e.g. ``V [Sens. ZsensSens] (0.00000000572205 V/LSB) 24.57600 V``.
+_BRUKER_Z_SCALE = re.compile(r"\[Sens\. (?P<ref>[^\]]+)\] \((?P<lsb>\S+) V/LSB\)")
+# ``@Sens.`` value, e.g. ``V 199.0681 nm/V``.
+_BRUKER_SENS = re.compile(r"V\s+(?P<value>\S+)\s*(?P<unit>\S*)")
+# Unit prefixes used in NanoScope headers; ``~`` stands for µ.
+_PREFIX = {"": 1.0, "k": 1e3, "m": 1e-3, "~": 1e-6, "u": 1e-6, "µ": 1e-6, "n": 1e-9,
+           "p": 1e-12, "f": 1e-15}
+_SI_UNITS = ("m", "N", "V", "A")
 
 
 @dataclass(frozen=True, eq=False)
@@ -269,6 +289,154 @@ class AsylumScan:
         return "\n".join(lines)
 
 
+class BrukerScan:
+    """
+    A Bruker AFM scan loaded from a NanoScope ``.spm`` file (NanoScope 9.x image files).
+
+    All channels are loaded; pick one explicitly with ``scan["Height Sensor Retrace"]``.
+    Channel names are the NanoScope name followed by the line direction.
+
+    Data are loaded as saved. NanoScope records no line flatten in the header of a
+    captured image, so none is undone. A file flattened after capture (in NanoScope
+    Analysis) and saved again is not marked in its header either; ``summary()`` points
+    out channels whose every line has zero mean, which is the trace such a flatten leaves.
+
+    Parameters
+    ----------
+    path : str or Path
+        The ``.spm`` file.
+
+    Attributes
+    ----------
+    path : Path
+    metadata : dict
+        Every ``key: value`` line of the header outside the image sections. Numbers
+        become int/float, everything else stays str.
+    channel_metadata : dict
+        ``{channel name: dict}``, the header section of each channel, parsed the same way.
+    shape : tuple
+        ``(n_rows, n_cols)`` of every channel. An interrupted scan has fewer rows than
+        the planned ``metadata["Lines"]``.
+    size : tuple
+        ``(x, y)`` size of the scanned area in m (fast, slow axis).
+    pixel_size : tuple
+        ``(dx, dy)`` in m: scan size / planned number of points along each axis.
+
+    Examples
+    --------
+    >>> scan = BrukerScan("sample6_image1.0_00000.spm")
+    >>> print(scan)                                 # summary of the scan settings
+    >>> z = scan["Height Sensor Retrace"].data      # metres
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+        raw = self.path.read_bytes()
+        self.metadata, sections = _parse_bruker_header(raw, self.path.name)
+
+        self._channels = {}
+        self.channel_metadata = {}
+        for section in sections:
+            name = _bruker_channel_name(section)
+            if name in self._channels:
+                raise ValueError(f"{self.path.name}: two channels named {name!r}.")
+            factor, units = _bruker_scale(section, self.metadata, name)
+            z = _bruker_read_image(raw, section, name) * factor
+            self.channel_metadata[name] = section
+            self._channels[name] = Channel(
+                name=name, data=np.flipud(z), units=units, correction_undone=False
+            )
+
+        first = sections[0]
+        self.shape = next(iter(self._channels.values())).data.shape
+        x, y = _bruker_length(first["Scan Size"], name="Scan Size")
+        planned_lines = int(self.metadata.get("Lines", self.shape[0]))
+        self.pixel_size = (x / int(first["Samps/line"]), y / planned_lines)
+        self.size = (self.pixel_size[0] * self.shape[1], self.pixel_size[1] * self.shape[0])
+
+    @property
+    def channels(self) -> list[str]:
+        """Names of the channels in the file, in stored order."""
+        return list(self._channels)
+
+    def __getitem__(self, name: str) -> Channel:
+        try:
+            return self._channels[name]
+        except KeyError:
+            raise KeyError(
+                f"No channel {name!r} in {self.path.name}. Available: {self.channels}"
+            ) from None
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._channels
+
+    def __repr__(self) -> str:
+        return (
+            f"<BrukerScan {self.path.name!r} {self.shape[0]}x{self.shape[1]}, "
+            f"channels {self.channels}>"
+        )
+
+    def __str__(self) -> str:
+        return self.summary()
+
+    def summary(self) -> str:
+        """Readable summary of the scan settings. Lines whose keys are missing are left out."""
+        g = self.metadata.get
+        first = next(iter(self.channel_metadata.values()))
+        lines = [f"BrukerScan  {self.path.name}"]
+
+        def add(label, text):
+            lines.append(f"  {label:<12} {text}")
+
+        acquired = [str(s) for s in (g("Date"), g("Description")) if s]
+        if g("Version"):
+            acquired.append(f"NanoScope {g('Version')}")
+        if acquired:
+            add("Acquired", " · ".join(acquired))
+
+        mode = [_quoted(g(key)) for key in ("@MicroscopeList", "@2:SPMFeedbackList")]
+        mode = [m for m in mode if m]
+        if mode:
+            add("Mode", ", ".join(mode) + (" feedback" if len(mode) == 2 else ""))
+
+        sx, sy = self.size
+        scan = [f"{sx * 1e6:.2f} × {sy * 1e6:.2f} µm", f"{self.shape[1]} × {self.shape[0]} px"]
+        if isinstance(g("Rotate Ang."), (int, float)):
+            scan.append(f"angle {g('Rotate Ang.'):g}°")
+        if first.get("Frame direction"):
+            scan.append(f"frame {str(first['Frame direction']).lower()}")
+        planned = g("Lines")
+        if isinstance(planned, int) and self.shape[0] < planned:
+            scan.append(f"interrupted: {self.shape[0]} of {planned} lines")
+        add("Scan", " · ".join(scan))
+
+        dx, dy = self.pixel_size
+        add("Pixel size", f"{dx * 1e9:.2f} × {dy * 1e9:.2f} nm   "
+                          "(sampling only; real lateral resolution is tip-limited)")
+
+        if isinstance(g("Scan Rate"), (int, float)):
+            add("Timing", f"{g('Scan Rate'):.3g} Hz line rate")
+
+        calibration = []
+        for ref, label in (("DeflSens", "deflection"), ("ForceDeflSens", "force")):
+            sens = _BRUKER_SENS.match(str(g(f"@Sens. {ref}", "")))
+            if sens:
+                calibration.append(f"{label} {float(sens['value']):.2f} {sens['unit']}")
+        if calibration:
+            add("Calibration", " · ".join(calibration))
+
+        add("Channels", " · ".join(
+            f"{c.name} [{c.units or '?'}]" for c in self._channels.values()))
+
+        flattened = [c.name for c in self._channels.values() if _lines_zero_mean(c.data)]
+        if flattened:
+            add("Correction", "every line has zero mean on: " + ", ".join(flattened)
+                + " (looks line-flattened after capture; cannot be undone)")
+        else:
+            add("Correction", "none recorded by NanoScope")
+        return "\n".join(lines)
+
+
 def _parse_note(note: bytes) -> dict:
     """Parse the ``key: value`` lines of an Asylum wave note. First occurrence of a key wins."""
     meta = {}
@@ -332,3 +500,125 @@ def _undo_saved_flatten(z: np.ndarray, meta: dict, layer: int, dx: float):
         )
     x = np.arange(z.shape[1]) * dx
     return z + offsets[:, None] + slopes[:, None] * x, True
+
+
+def _parse_bruker_header(raw: bytes, filename: str):
+    """
+    Parse a NanoScope header. Returns ``(metadata, sections)``: the file-level
+    ``key: value`` pairs, and one dict per ``\\*Ciao image list`` section (one per channel).
+    First occurrence of a key wins within each dict.
+    """
+    end = raw.find(b"\x1a")
+    if not raw.startswith(b"\\*File list") or end < 0:
+        raise ValueError(
+            f"{filename} is not a NanoScope image file: it should start with a "
+            r"'\*File list' text header ending in byte 0x1A."
+        )
+    meta, sections = {}, []
+    current = meta
+    for line in raw[:end].decode("latin-1").split("\r\n"):
+        line = line.lstrip("\\")
+        if line.startswith("*"):  # section title
+            if line == "*File list end":
+                break
+            if line == "*Ciao image list":
+                current = {}
+                sections.append(current)
+            else:
+                current = meta
+            continue
+        match = _BRUKER_LINE.fullmatch(line)
+        if match and match[1].strip() not in current:
+            current[match[1].strip()] = _parse_value(match[2].strip())
+    if not sections:
+        raise ValueError(f"{filename} holds no image channel (no '*Ciao image list').")
+    return meta, sections
+
+
+def _bruker_channel_name(section: dict) -> str:
+    """NanoScope channel name followed by the line direction, e.g. "Height Sensor Retrace"."""
+    name = _quoted(section.get("@2:Image Data")) or "Unnamed"
+    direction = section.get("Line Direction")
+    return f"{name} {direction}" if direction else name
+
+
+def _quoted(text) -> str:
+    """The ``"..."`` part of a NanoScope value such as ``S [ZSensor] "Height Sensor"``."""
+    match = re.search(r'"(.*)"', str(text or ""))
+    return match[1] if match else ""
+
+
+def _bruker_scale(section: dict, meta: dict, name: str):
+    """
+    Factor from stored integers to SI units, and those units, for one channel.
+
+    value = integer × (V/LSB written in ``@2:Z scale``) × ``@Sens.`` sensitivity. The V/LSB
+    is taken as written, never recomputed from ``Bytes/pixel``, which NanoScope 9.x
+    states as 2 for channels stored on 4 bytes.
+    """
+    z_scale = str(section.get("@2:Z scale", ""))
+    match = _BRUKER_Z_SCALE.search(z_scale)
+    if not match:
+        raise NotImplementedError(
+            f"Channel {name!r}: Z scale {z_scale!r} does not refer to a sensitivity "
+            "('[Sens. ...]'); converting it is not implemented."
+        )
+    sens_text = meta.get(f"@Sens. {match['ref']}")
+    sens = _BRUKER_SENS.match(str(sens_text or ""))
+    if not sens:
+        raise ValueError(
+            f"Channel {name!r}: sensitivity 'Sens. {match['ref']}' is missing from the header."
+        )
+    factor = float(match["lsb"]) * float(sens["value"])
+
+    numerator, _, denominator = sens["unit"].partition("/")
+    for unit in _SI_UNITS:
+        prefix = numerator[: -len(unit)] if numerator.endswith(unit) else None
+        if denominator == "V" and prefix in _PREFIX:
+            return factor * _PREFIX[prefix], unit
+    return factor, ""  # e.g. "1/Arb" or no unit: kept as volts × sensitivity
+
+
+def _bruker_read_image(raw: bytes, section: dict, name: str) -> np.ndarray:
+    """
+    The stored integers of one channel, as floats, rows = scan lines in stored order.
+
+    The integer width is ``Data length / pixels``, not ``Bytes/pixel`` (see
+    ``_bruker_scale``). Raises if a plane fit was saved with the channel.
+    """
+    plane = [float(v) for v in str(section.get("Plane fit", "0 0 0")).split()[:3]]
+    if any(plane):
+        raise NotImplementedError(
+            f"Channel {name!r} was saved with plane fit coefficients {plane}; "
+            "undoing them is not implemented."
+        )
+    n_cols, n_rows = int(section["Samps/line"]), int(section["Number of lines"])
+    offset, length = int(section["Data offset"]), int(section["Data length"])
+    width, rest = divmod(length, n_cols * n_rows)
+    if rest or width not in (2, 4):
+        raise ValueError(
+            f"Channel {name!r}: {length} bytes for {n_rows} x {n_cols} pixels is not "
+            "2 or 4 bytes per pixel."
+        )
+    if offset + length > len(raw):
+        raise ValueError(
+            f"Channel {name!r}: data run to byte {offset + length}, past the end of the "
+            f"file ({len(raw)} bytes). The file may be truncated."
+        )
+    stored = np.frombuffer(raw, dtype=f"<i{width}", count=n_rows * n_cols, offset=offset)
+    return stored.reshape(n_rows, n_cols).astype(float)
+
+
+def _bruker_length(text: str, name: str):
+    """``"10 10 ~m"`` -> ``(1e-5, 1e-5)`` in m."""
+    *values, unit = str(text).split()
+    prefix = unit[:-1] if unit.endswith("m") else None
+    if len(values) != 2 or prefix not in _PREFIX:
+        raise ValueError(f"Cannot read {name} {text!r} as two lengths with a unit.")
+    return tuple(float(v) * _PREFIX[prefix] for v in values)
+
+
+def _lines_zero_mean(z: np.ndarray) -> bool:
+    """True if every line of ``z`` has zero mean, to 1e-6 of the image's range."""
+    span = np.ptp(z)
+    return bool(span > 0 and np.all(np.abs(z.mean(axis=1)) <= 1e-6 * span))

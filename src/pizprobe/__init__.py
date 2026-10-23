@@ -4,7 +4,7 @@
 """
 
 from . import analysis, mask, plotting
-from .loaders import AsylumScan, Channel
+from .loaders import AsylumScan, BrukerScan, Channel
 from .processing import line_flatten, plane_fit
 
-__all__ = ["AsylumScan", "Channel", "line_flatten", "plane_fit"]
+__all__ = ["AsylumScan", "BrukerScan", "Channel", "line_flatten", "plane_fit"]

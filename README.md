@@ -18,3 +18,16 @@ scan.metadata["ScanRate"]                   # every wave-note entry, parsed
 
 Data stay in SI units (m, deg). Images use the Asylum/AFMReader orientation
 (`np.flipud(wData.T)`). Pass `undo_default_correction=False` to get the data exactly as saved.
+
+Bruker NanoScope `.spm` files load the same way, as saved:
+
+```python
+from pizprobe import BrukerScan
+
+scan = BrukerScan("sample6_image1.0_00000.spm")
+scan.channels                               # ['Height Sensor Retrace', 'Peak Force Error Retrace']
+z = scan["Height Sensor Retrace"].data      # 2-D array in metres
+```
+
+NanoScope images are flipped upside down from the stored line order, as in Gwyddion; this
+orientation has not yet been checked against the NanoScope display.
