@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from pizprobe.analysis import Profile, crossings, markers, profile, step_height
+from pizprobe.analysis import Profile, crossings, markers, profile, roughness, step_height
+from pizprobe.mask import rectangle
 
 # Non-square image and non-square pixels, so a swapped axis would fail.
 ROWS, COLS = 40, 60
@@ -202,3 +203,52 @@ def test_crossings_bad_level_raises():
     p = profile(RIDGE, (5, 20), (55, 20))
     with pytest.raises(ValueError, match="finite number"):
         crossings(p, np.nan)
+
+
+def test_roughness_of_a_square_wave_is_its_amplitude():
+    h = 3e-9
+    square = np.where(C % 2 == 0, h, -h)            # 30 columns +h, 30 columns -h
+    r = roughness(square)
+    assert r.sq == pytest.approx(h) and r.sa == pytest.approx(h) and r.n == ROWS * COLS
+
+
+def test_roughness_of_a_sine_and_an_offset_does_not_matter():
+    a = 2e-9
+    sine = a * np.sin(2 * np.pi * C / 20)           # 3 whole periods across the image
+    r = roughness(sine + 50e-9)
+    assert r.sq == pytest.approx(a / np.sqrt(2), rel=1e-12)
+    # Sa sampled at 20 points per period: mean |sin| = cot(pi / 20) / 10, close to 2 / pi.
+    assert r.sa == pytest.approx(a / np.tan(np.pi / 20) / 10, rel=1e-12)
+    assert r.sa == pytest.approx(2 * a / np.pi, rel=1e-2)
+
+
+def test_roughness_region_matches_the_cut_out_image():
+    rng = np.random.default_rng(0)
+    z = rng.normal(0, 1e-9, (ROWS, COLS)) + PLANE
+    region = rectangle(z.shape, x=(10, 29), y=(5, 24))
+    r = roughness(z, region=region)
+    whole = roughness(z[5:25, 10:30])
+    assert r.n == 400 == whole.n
+    assert r.sq == pytest.approx(whole.sq) and r.sa == pytest.approx(whole.sa)
+
+
+def test_roughness_leaves_out_nan_pixels():
+    rng = np.random.default_rng(1)
+    z = rng.normal(0, 1e-9, (ROWS, COLS))
+    holes = z.copy()
+    holes[:, :10] = np.nan
+    r = roughness(holes)
+    assert r.n == ROWS * (COLS - 10)
+    assert r.sq == pytest.approx(roughness(z[:, 10:]).sq)
+
+
+def test_roughness_bad_input_raises():
+    z = np.zeros((ROWS, COLS))
+    with pytest.raises(ValueError, match="No finite pixel"):
+        roughness(z, region=np.zeros(z.shape, dtype=bool))
+    with pytest.raises(ValueError, match="No finite pixel"):
+        roughness(np.full((ROWS, COLS), np.nan))
+    with pytest.raises(ValueError, match="does not match"):
+        roughness(z, region=np.ones((ROWS, COLS + 1), dtype=bool))
+    with pytest.raises(ValueError, match="2-D"):
+        roughness(np.zeros(COLS))

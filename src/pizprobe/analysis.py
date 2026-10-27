@@ -12,6 +12,8 @@ StepHeight
     Mean levels of two ranges on a line cut and the difference between them.
 Crossings
     The distances where a line cut passes through a given value.
+Roughness
+    Areal roughness Sq and Sa of an image or a region of it.
 
 Functions
 ---------
@@ -23,6 +25,8 @@ step_height
     Mean value in two distance ranges along a line cut, and their difference.
 crossings
     Distances where a line cut passes through a given value, e.g. to measure a width.
+roughness
+    Areal roughness Sq (RMS) and Sa (mean absolute) over the image or a region.
 
 Conventions
 -----------
@@ -40,7 +44,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import ndimage
 
-from ._common import _as_image, _check_pixel_size, _to_pixels
+from ._common import _as_image, _check_mask, _check_pixel_size, _to_pixels
 
 # Pixel-coordinate tolerance for "end point inside the image", so an end given in metres
 # exactly on the last pixel centre (up to rounding in y / dy) is accepted.
@@ -426,6 +430,90 @@ def crossings(p: Profile, level: float) -> Crossings:
     fraction = v[i] / (v[i] - v[i + 1])             # 0 at sample i, 1 at sample i + 1
     distance = p.distance[i] + fraction * (p.distance[i + 1] - p.distance[i])
     return Crossings(distance=distance, level=level, profile=p)
+
+
+@dataclass(frozen=True, eq=False)
+class Roughness:
+    """
+    Areal roughness of an image or a region of it (ISO 25178-2 definitions).
+
+    Attributes
+    ----------
+    sq : float
+        RMS roughness ``sqrt(mean((z - mean(z))**2))``, in the units of the image.
+    sa : float
+        Mean absolute roughness ``mean(|z - mean(z)|)``, in the units of the image.
+    n : int
+        Number of pixels used: finite and inside the region.
+    """
+
+    sq: float
+    sa: float
+    n: int
+
+    def __repr__(self) -> str:
+        return f"<Roughness Sq {self.sq:.4g}, Sa {self.sa:.4g}, n {self.n}>"
+
+
+def roughness(z, region=None) -> Roughness:
+    """
+    Areal roughness Sq and Sa over the whole image or a region of it.
+
+    With ``eta = z - mean(z)`` over the ``n`` finite pixels used::
+
+        Sq = sqrt(sum(eta**2) / n)        Sa = sum(|eta|) / n
+
+    Only the mean is subtracted: no plane is fitted, so any tilt or bow left in the
+    region adds to the result (a tilt of slope ``s`` across a width ``L`` adds about
+    ``s * L / sqrt(12)`` to Sq). Level the image first, e.g. with
+    ``plane_fit(z, mask=~region)`` to fit the plane on the region only. No wavelength
+    filter (ISO 25178 S- or L-filter) is applied, so the values depend on the scan size
+    and the pixel size: compare only scans of the same size and resolution. The sums are
+    divided by ``n``, not ``n - 1``, as in ISO 25178-2.
+
+    Parameters
+    ----------
+    z : np.ndarray
+        2-D image, e.g. a levelled height image. NaN pixels are left out.
+    region : np.ndarray of bool, optional
+        Same shape as ``z``. **True marks the pixels to measure**, as returned by
+        ``pizprobe.mask.rectangle`` and ``polygon``. This is the opposite of ``mask=`` in
+        ``pizprobe.processing``, where True means left out. None: the whole image.
+
+    Returns
+    -------
+    Roughness
+        ``.sq``, ``.sa`` in the units of the image, and ``.n``, the number of pixels used.
+
+    Raises
+    ------
+    ValueError
+        If ``z`` is not 2-D, ``region`` has the wrong shape, or no finite pixel is
+        inside the region.
+
+    Examples
+    --------
+    >>> r = roughness(flat)                                   # whole image
+    >>> region = mask.rectangle(flat.shape, x=(2e-6, 8e-6), y=(0, 5e-6),
+    ...                         pixel_size=scan.pixel_size)
+    >>> r = roughness(flat, region=region)
+    >>> r.sq, r.sa, r.n                                       # m, m, pixels
+    """
+    z = _as_image(z)
+    region = _check_mask(region, z.shape)
+    use = np.isfinite(z)
+    if region is not None:
+        use &= region
+    if not use.any():
+        raise ValueError(
+            "No finite pixel to measure: the region is empty or holds only NaN pixels."
+        )
+    eta = z[use] - z[use].mean()
+    return Roughness(
+        sq=float(np.sqrt(np.mean(eta**2))),
+        sa=float(np.mean(np.abs(eta))),
+        n=int(use.sum()),
+    )
 
 
 def _check_distances(p: Profile, pair, name: str, form: str) -> np.ndarray:
